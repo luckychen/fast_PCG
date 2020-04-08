@@ -394,6 +394,73 @@ __global__ void COO_level1(const uint32_t num_nozeros, const uint32_t interval_s
 	
 }
 
+__global__ void COO_level1_atomic(const uint32_t num_nozeros, const uint32_t interval_size, 
+				const uint32_t *I, const uint32_t *J, const double *V, 
+				const double *x, double *y)
+{
+	__shared__ volatile int rows[48*thread_size/WARP_SIZE];  //why using 48? because we need 16 additional junk elements
+	__shared__ volatile double vals[thread_size];
+	
+	uint32_t thread_id = blockDim.x*blockIdx.x + threadIdx.x;
+	uint32_t thread_lane= threadIdx.x & (WARP_SIZE-1); //great idea! think about it
+	uint32_t warp_id = thread_id / WARP_SIZE;
+	
+	uint32_t interval_begin=warp_id*interval_size;
+	uint32_t interval_end =min(interval_begin+interval_size, num_nozeros);
+	/*how about the interval is not the multiple of warp_size?*/
+	//uint32_t iteration_end=((interval_end)/WARP_SIZE)*WARP_SIZE;
+	
+	uint32_t idx=16*(threadIdx.x/32+1) + threadIdx.x;//every warp has 16 "junk" rows elements
+	
+	rows[idx-16]=-1;
+		
+	if (thread_lane ==31)
+	{
+		// initialize the cary in values
+		rows[idx]=I[interval_begin];
+		vals[threadIdx.x]=0;
+	}
+	uint32_t n;
+	n=interval_begin+thread_lane;
+	while (n< interval_end)
+	{
+		uint32_t row =I[n];
+		//double val=V[n]*fetch_x(J[n], x);
+		double val=V[n]*x[J[n]];
+		
+		if (thread_lane==0)
+		{
+			if (row==rows[idx+31])
+				val+=vals[threadIdx.x+31]; //don't confused by the "plus" 31, because the former end is the new start
+			else 
+				y[rows[idx+31]] += vals[threadIdx.x+31];//try to fix the bug from orignial library functions
+		}
+		rows[idx] =row;
+		vals[threadIdx.x] =val;
+		
+        if(row == rows[idx -  1]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  1]; } 
+        if(row == rows[idx -  2]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  2]; }
+        if(row == rows[idx -  4]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  4]; }
+        if(row == rows[idx -  8]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  8]; }
+        if(row == rows[idx - 16]) { vals[threadIdx.x] = val = val + vals[threadIdx.x - 16]; }
+
+        if(thread_lane < 31 && row < rows[idx + 1] && n<interval_end-1)
+            y[row] += vals[threadIdx.x];  
+		n+=WARP_SIZE;
+	}
+	
+	/*now we consider the reminder of interval_size/warp_size*/
+
+    /*program at one warp is automatically sychronized*/
+	if(n==(interval_end+WARP_SIZE-1))
+    {
+        // write the carry out values
+		atomicAdd(&y[rows[idx]],vals[threadIdx.x]);
+    }	
+	
+}
+
+
 /* The second level of the segmented reduction operation
 Why we need second level of reduction? because the program running at different block can not be sychronized 
 Notice the number of input elements is fixed, and the number is relatively much small than the dimension of matrixs
@@ -582,6 +649,33 @@ void matrix_vectorELL_block(const uint32_t num_rows, const uint32_t testPoint,
 	
 }
 
+void matrix_vectorCOO_atomic(const uint32_t num_nozeros_compensation, uint32_t *I, uint32_t *J, double *V, double *x_d, double *y_d)
+{
+	uint32_t interval_size2;
+	interval_size2=ceil(((double) num_nozeros_compensation)/(block_size*thread_size/WARP_SIZE));//for data with 2 million elements, we have interval size 200	
+	//printf("num_nozeros_compensation is %d, intervalSize is %d\n",num_nozeros_compensation, interval_size2 );
+	if (interval_size2>32)
+	{
+		//512*512
+		COO_level1_atomic<<<block_size,thread_size>>>(num_nozeros_compensation,interval_size2, 
+					I, J, V, x_d, y_d);
+	}
+	else if (interval_size2>1)
+	{
+		//16*512
+		uint32_t interval_size3=ceil(((double) num_nozeros_compensation)/(block_size2*thread_size2/WARP_SIZE));//for data with 2 million elements, we have interval size 200	
+		COO_level1_atomic<<<block_size2,thread_size2>>>(num_nozeros_compensation, interval_size3, 
+				I, J, V, x_d, y_d);
+				
+	} else {
+	
+		//less than 512, all calculation excuted serially
+		//printf("situation 3 happen\n");
+		COO_level1_serial<<<1,1>>>(num_nozeros_compensation, I,J,V,x_d,y_d);
+	}
+	
+}
+
 void matrix_vectorCOO(const uint32_t num_nozeros_compensation, uint32_t *I, uint32_t *J, double *V, double *x_d, double *y_d)
 {
 	uint32_t interval_size2;
@@ -664,6 +758,6 @@ void matrix_vectorHYB(matrixHYB_S_d* inputMatrix, double* vector_in_d,
 		}
 	}
 
-	if (totalNumCOO > 0) matrix_vectorCOO(totalNumCOO, I_COO_d, J_COO_d, V_COO_d, 
+	if (totalNumCOO > 0) matrix_vectorCOO_atomic(totalNumCOO, I_COO_d, J_COO_d, V_COO_d, 
 			vector_in_d, vector_out_d);
 }

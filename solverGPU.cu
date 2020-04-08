@@ -200,7 +200,6 @@ void solverGPU_unprecondHYB(matrixCOO_S* localMatrix,
 		doth=doth+vector_in[i]*vector_in[i];
 	}
 	struct timeval start1, end1;
-	gettimeofday(&start1, NULL);
 	double *bp=(double *) malloc(size1);
 	double *pk=(double *) malloc(size1);
 	double *rk=(double *) malloc(size1);
@@ -220,6 +219,7 @@ void solverGPU_unprecondHYB(matrixCOO_S* localMatrix,
 		bp[i]=0;
 	}
 	
+	gettimeofday(&start1, NULL);
 	while (error>threshold&&iter<MAXIter){
 		dotp0=0;
 		dotr0=0;
