@@ -232,13 +232,13 @@ void solverGPU_unprecondHYB(matrixCOO_S* localMatrix,
 			   part_size, part_boundary_d, tex);
 		//cudaMemcpy(bp_g, bp_d, dimension*sizeof(double), cudaMemcpyDeviceToHost);
 		//for(int i = 0; i < dimension; ++i){
-		//	compareError = 	(bp_g[i] - bp[i])/bp_g[i];
+		//	compareError = 	(bp_g[i] - bp[i])/bp[i];
 		//	if(errorIdx == 0  && (compareError > 0.000001 || compareError < -0.00001)){ 	
 		//		printf("bp[%d] of GPU result is %f, test value is %f\n", i, bp_g[i], bp[i]);
 		//		if(errorIdx == 0) errorIdx = i;	
 		//	}
 		//}
-		//
+		
 		//matrix_vectorTest(localMatrix, vector_in, bp, errorIdx);
 		//cudaMemset(bp_d, 0, size1);
 		//matrix_vectorHYB(&localMatrixHYB_d, pk_d, bp_d, cb, errorIdx,
