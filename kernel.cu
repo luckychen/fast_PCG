@@ -368,33 +368,7 @@ __global__ void COO_shared2(const uint32_t num_nozeros,
 	uint32_t row;
 	double val;
 	
-	//first iteration, carry is not considered
-	n = blockDim.x*blockIdx.x*step_p_blk + warp_id*WARP_SIZE*step_p_blk 
-		+thread_lane;
-	if(n < num_nozeros){
-		row =I[n];
-		//double val=V[n]*fetch_x(J[n], x);
-		val=V[n]*x[J[n]];
-
-		rows[idx] =row;
-		vals[threadIdx.x] =val;
-
-		if(row == rows[idx -  1]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  1]; }
-		if(row == rows[idx -  2]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  2]; }
-		if(row == rows[idx -  4]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  4]; }
-		if(row == rows[idx -  8]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  8]; }
-		if(row == rows[idx - 16]) { vals[threadIdx.x] = val = val + vals[threadIdx.x - 16]; }
-
-		if(thread_lane < 31 && row != rows[idx + 1]){
-			//	if(row == testPoint ){
-			//		y[row] += val;
-			//	} else
-			//y[row] += val;
-			atomicAdd(&y[row],val);  
-
-		}
-	}
-	for(uint16_t it = 1;  it < step_p_blk; ++it)
+	for(uint16_t it = 0;  it < step_p_blk; ++it)
 	{
 		n = blockDim.x*blockIdx.x*step_p_blk + warp_id*WARP_SIZE*step_p_blk 
 			+ it*WARP_SIZE + thread_lane;	
@@ -402,14 +376,6 @@ __global__ void COO_shared2(const uint32_t num_nozeros,
 			row =I[n];
 			//double val=V[n]*fetch_x(J[n], x);
 			val=V[n]*x[J[n]];
-			if (thread_lane==0)
-			{
-				if (row==rows[idx+31])
-					val+=vals[threadIdx.x+31]; //don't confused by the "plus" 31, because the former end is the new start
-				else 
-					atomicAdd(&y[rows[idx+31]], vals[threadIdx.x+31]);  
-				//y[rows[idx+31]] += vals[threadIdx.x+31];//try to fix the bug from orignial library functions
-			}
 
 			rows[idx] =row;
 			vals[threadIdx.x] =val;
@@ -420,29 +386,80 @@ __global__ void COO_shared2(const uint32_t num_nozeros,
 			if(row == rows[idx -  8]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  8]; }
 			if(row == rows[idx - 16]) { vals[threadIdx.x] = val = val + vals[threadIdx.x - 16]; }
 
-			if(thread_lane < 31 && row != rows[idx + 1]){
-				//	if(row == testPoint ){
-				//		y[row] += val;
-				//	} else
-				//y[row] += val;
+			if(thread_lane == 31 || n == num_nozeros -1){
+				//if(row == testPoint){
+				//	y[row] += val;
+				//}else
 				atomicAdd(&y[row],val);  
+			}else{
+				if(row != rows[idx + 1]){
+					//	if(row == testPoint ){
+					//		y[row] += val;
+					//	} else
+					//y[row] += val;
+					atomicAdd(&y[row],val);  
 
-			}
-			//suppose compiler will figure out the branch when compiling
-			if(blockIdx.x == gridDim.x - 1){
-				if( n == num_nozeros - 1 && row == rows[idx + 1]) 	
-					y[row] += val;
+				}
 			}
 		}
 	}
-	if(thread_lane == 31 ){
-		//if(row == testPoint){
-		//	y[row] += val;
-		//}else
-		atomicAdd(&y[row],val);  
-	}
-	
+}
 
+__global__ void COO_shared_tex(const uint32_t num_nozeros,
+				const uint32_t *I, const uint32_t *J, const double *V,
+				const double *x, double *y)
+{
+	__shared__ volatile int rows[48*thread_size/WARP_SIZE];  //why using 48? because we need 16 additional junk elements
+	__shared__ volatile double vals[thread_size];
+
+	uint32_t thread_lane= threadIdx.x & (WARP_SIZE-1); //great idea! think about it
+	uint32_t warp_id = threadIdx.x / WARP_SIZE;
+	/*how about the interval is not the multiple of warp_size?*/
+	//uint32_t iteration_end=((interval_end)/WARP_SIZE)*WARP_SIZE;
+
+	uint32_t idx=16*(threadIdx.x/32+1) + threadIdx.x;//every warp has 16 "junk" rows elements
+	rows[idx-16]=-1;
+	rows[idx]=0;	
+	
+	uint32_t n;
+	uint32_t row;
+	double val;
+	
+	for(uint16_t it = 0;  it < step_p_blk; ++it)
+	{
+		n = blockDim.x*blockIdx.x*step_p_blk + warp_id*WARP_SIZE*step_p_blk 
+			+ it*WARP_SIZE + thread_lane;	
+		if(n < num_nozeros){
+			row =I[n];
+			val=V[n]*fetch_double(tex1Dfetch(texInput, J[n]));
+			//val=V[n]*x[J[n]];
+
+			rows[idx] =row;
+			vals[threadIdx.x] =val;
+
+			if(row == rows[idx -  1]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  1]; }
+			if(row == rows[idx -  2]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  2]; }
+			if(row == rows[idx -  4]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  4]; }
+			if(row == rows[idx -  8]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  8]; }
+			if(row == rows[idx - 16]) { vals[threadIdx.x] = val = val + vals[threadIdx.x - 16]; }
+
+			if(thread_lane == 31 || n == num_nozeros -1){
+				//if(row == testPoint){
+				//	y[row] += val;
+				//}else
+				atomicAdd(&y[row],val);  
+			}else{
+				if(row != rows[idx + 1]){
+					//	if(row == testPoint ){
+					//		y[row] += val;
+					//	} else
+					//y[row] += val;
+					atomicAdd(&y[row],val);  
+
+				}
+			}
+		}
+	}
 }
 
 
@@ -646,16 +663,7 @@ void matrix_vectorHYB(matrixHYB_S_d* inputMatrix, double* vector_in_d,
 	uint32_t* ELL_block_bias_vec_d = inputMatrix->ELL_block_bias_vec_d;
 	uint32_t* ELL_block_cols_vec_d = inputMatrix->ELL_block_cols_vec_d;
 	size_t offset = 0;
-	if(tex==true){
-		if(texInited == false){
-			texInput.addressMode[0] = cudaAddressModeBorder;
-			texInput.addressMode[1] = cudaAddressModeBorder;
-			texInput.filterMode = cudaFilterModePoint;
-			texInput.normalized = false;
-			texInited = true;
-		}
-		cudaBindTexture(&offset, texInput, vector_in_d, sizeof(double)*dimension);	
-	}
+	
 	if(!cb.BLOCK){
 		matrix_vectorELL(dimension, dimension, ELL_width, col_d,V_d,
 				vector_in_d, vector_out_d, false, 0, NULL);
@@ -675,6 +683,16 @@ void matrix_vectorHYB(matrixHYB_S_d* inputMatrix, double* vector_in_d,
 		}
 	}
 
+	if(tex==true){
+		if(texInited == false){
+			texInput.addressMode[0] = cudaAddressModeBorder;
+			texInput.addressMode[1] = cudaAddressModeBorder;
+			texInput.filterMode = cudaFilterModePoint;
+			texInput.normalized = false;
+			texInited = true;
+		}
+		cudaBindTexture(&offset, texInput, vector_in_d, sizeof(double)*dimension);	
+	}
 	if (totalNumCOO > 0) matrix_vectorCOO(totalNumCOO, I_COO_d, J_COO_d, V_COO_d, 
 			vector_in_d, vector_out_d, testPoint, tex);
 

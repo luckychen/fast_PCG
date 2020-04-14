@@ -82,6 +82,7 @@ void COO2ELL(const unsigned int *row_local, const unsigned int *col_local,
 
 static void ELL_block_cols_vec_gen_rodr(unsigned int* ELL_block_cols_vec, 
 		unsigned int* size_COO, 
+		const uint32_t* col,
 		unsigned int* block_boundary, 
 		const unsigned int* part_boundary, 
 		const int dimension, 
@@ -105,6 +106,7 @@ static void ELL_block_cols_vec_gen_rodr(unsigned int* ELL_block_cols_vec,
 	for(unsigned int part_idx = 0; part_idx < part_num; ++part_idx){
 		unsigned int block_end = part_boundary[part_idx] + ELL_threadSize*block_per_part;
 		unsigned int part_end = part_boundary[part_idx + 1];
+		unsigned int part_start = part_boundary[part_idx];
 
 		if(block_end < part_end)
 			extraRows = part_end - block_end;
@@ -146,6 +148,10 @@ static void ELL_block_cols_vec_gen_rodr(unsigned int* ELL_block_cols_vec,
 				if(nonzeros > num_cols){
 					*size_COO += nonzeros - num_cols;	
 				} 
+				for(uint32_t j = row_idx[row_val]; j < row_idx[row_val + 1]; ++j){
+					if(col[j] < part_start || col[j] >= part_end)
+						*size_COO += 1;
+				}
 			}
 			ELL_block_cols_vec[block_idx] = num_cols;	
 			block_idx += 1;
@@ -225,11 +231,11 @@ static void COO2ELL_block_core(unsigned int* colELL, double* matrixELL,
 		const unsigned int* row_local, const unsigned int* col_local, 
 		const double* matrix_local,
 		unsigned int block_num, 
-		const unsigned int* boundary, 
+		const unsigned int* part_boundary, 
 		volatile bool RODR)
 { 
 	unsigned int block_rowSize;
-	unsigned int block_end = 0, part_end = 0, extraRows = 0;
+	unsigned int block_end = 0, part_start = 0, part_end = 0, extraRows = 0;
 	unsigned int irregular=0;
 	block_rowSize = ELL_threadSize;
 	unsigned pointCOO = 0;
@@ -243,10 +249,11 @@ static void COO2ELL_block_core(unsigned int* colELL, double* matrixELL,
 		extraRows = 0;
 		if(RODR){
 			part_idx = block_idx/block_per_part;
-			boundary_start = boundary[part_idx] + (block_idx%block_per_part)*ELL_threadSize;
+			part_start = part_boundary[part_idx];
+			part_end = part_boundary[part_idx + 1];
+			boundary_start = part_boundary[part_idx] + (block_idx%block_per_part)*ELL_threadSize;
 			if((block_idx + 1)%block_per_part == 0){
-				block_end = boundary[part_idx] + block_per_part*ELL_threadSize;	
-				part_end = boundary[part_idx + 1];
+				block_end = part_boundary[part_idx] + block_per_part*ELL_threadSize;	
 				if(part_end > block_end){
 				   	extraRows = part_end - block_end;
 					boundary_end = block_end;
@@ -266,58 +273,53 @@ static void COO2ELL_block_core(unsigned int* colELL, double* matrixELL,
 		for(unsigned int i = 0; i < block_rowSize; ++i){
 			unsigned int row_val = i + boundary_start;
 			if(row_val >= loc_num_of_row) break;
-			if (numInRow[row_val] > num_cols) {//goto COO format
-				for (unsigned int j = 0; j < numInRow[row_val]; ++j){
-					//the ELL value should still be set 
-					if (j < num_cols){
-						colELL[block_bias + i + j*block_rowSize] = 
-							col_local[row_idx[row_val] + j];
-						matrixELL[block_bias + i + j*block_rowSize]
-							= matrix_local[row_idx[row_val] + j];
+			uint32_t ELL_idx = 0;
+			for(uint32_t j = 0; j < numInRow[row_val]; ++j ){
+
+				uint32_t col_val = col_local[row_idx[row_val] + j] ;
+
+				if(ELL_idx < num_cols && col_val >= part_start && col_val < part_end){
+					//goto ELL format
+					colELL[block_bias + i + j*block_rowSize] = col_val;
+					matrixELL[block_bias + i + j*block_rowSize]
+						= matrix_local[row_idx[row_val] + j];
+					ELL_idx += 1;
+				} else {
+					//assign COO value
+					I_COO[pointCOO]=row_local[row_idx[row_val]+j];
+					J_COO[pointCOO]=col_local[row_idx[row_val]+j];
+					V_COO[pointCOO]=matrix_local[row_idx[row_val]+j];
+					pointCOO++;
+					if(pointCOO > size_COO){
+						printf("error at pointCOO %d\n", pointCOO);
+						exit(0);
 					}
-					else{
-						//assign COO value
+
+				}
+				if(ELL_idx < num_cols){
+					for(uint32_t j = ELL_idx; j < num_cols; ++j){
+						colELL[block_bias + i + j*block_rowSize] = 0;
+						matrixELL[block_bias + i + j*block_rowSize] = 0;
+						padding += 1;
+					}
+
+				}
+			}
+			if(extraRows > 0){
+				for(unsigned int row_val = block_end; row_val < part_end; ++row_val){
+					for(unsigned int j = 0; j < numInRow[row_val]; ++j){
 						I_COO[pointCOO]=row_local[row_idx[row_val]+j];
 						J_COO[pointCOO]=col_local[row_idx[row_val]+j];
 						V_COO[pointCOO]=matrix_local[row_idx[row_val]+j];
 						pointCOO++;
+						irregular+=1;
 						if(pointCOO > size_COO){
 							printf("error at pointCOO %d\n", pointCOO);
 							exit(0);
 						}
 					}
-				}
-			}else {//goto ELL format
-				for (unsigned int j=0; j < num_cols; ++j){
-					//write the ELL data
-					if (j < numInRow[row_val]){
-						colELL[block_bias + i + j*block_rowSize] = col_local[row_idx[row_val] + j];
-						matrixELL[block_bias + i + j*block_rowSize]
-								= matrix_local[row_idx[row_val] + j];
-					}
-					//write zero
-					else{
-						colELL[block_bias + i + j*block_rowSize] = 0;
-						matrixELL[block_bias + i + j*block_rowSize] = 0;
-						padding += 1;
-					}
-				}
+				}	
 			}
-		}
-		if(extraRows > 0){
-			for(unsigned int row_val = block_end; row_val < part_end; ++row_val){
-				for(unsigned int j = 0; j < numInRow[row_val]; ++j){
-					I_COO[pointCOO]=row_local[row_idx[row_val]+j];
-					J_COO[pointCOO]=col_local[row_idx[row_val]+j];
-					V_COO[pointCOO]=matrix_local[row_idx[row_val]+j];
-					pointCOO++;
-					irregular+=1;
-					if(pointCOO > size_COO){
-						printf("error at pointCOO %d\n", pointCOO);
-						exit(0);
-					}
-				}
-			}	
 		}
 	}
 	printf("irregular is %d, padding is %d \n", irregular, padding);
@@ -351,6 +353,7 @@ void COO2ELL_block(unsigned int *size_COO,
 	if(RODR){
 		ELL_block_cols_vec_gen_rodr(ELL_block_cols_vec, 
 				size_COO, 
+				col_local,
 				block_boundary,
 				part_boundary, 
 				loc_num_of_row, 

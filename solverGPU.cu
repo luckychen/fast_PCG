@@ -229,7 +229,7 @@ void solverGPU_unprecondHYB(matrixCOO_S* localMatrix,
 		//matrix_vectorTest(localMatrix, vector_in, bp, 0);
 		
 		matrix_vectorHYB(&localMatrixHYB_d, pk_d, bp_d, cb, 0,
-			   part_size, part_boundary_d, tex);
+			   part_size, part_boundary_d, true);
 		//cudaMemcpy(bp_g, bp_d, dimension*sizeof(double), cudaMemcpyDeviceToHost);
 		//for(int i = 0; i < dimension; ++i){
 		//	compareError = 	(bp_g[i] - bp[i])/bp[i];
