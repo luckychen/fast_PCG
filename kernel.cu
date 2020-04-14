@@ -604,7 +604,7 @@ void matrix_vectorELL_block(const uint32_t num_rows, const uint32_t testPoint,
 			ELL_cached_kernel_rodr<<<rodr_blocks, ELL_threadSize>>>(num_cols_per_row_vec, 
 					block_data_bias_vec,
 					J, V, x, y, part_boundary_d, tex);
-			gpuErrchk( cudaPeekAtLastError() );
+			//gpuErrchk( cudaPeekAtLastError() );
 		} else {
 			if(testPoint > 0){
 				ELL_kernel_rodr_test<<<rodr_blocks, ELL_threadSize>>>(num_cols_per_row_vec, 
