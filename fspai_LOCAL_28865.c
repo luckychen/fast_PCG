@@ -272,13 +272,8 @@ void spaiCPU(S *SInput)
 				vecBuf, hitRow, 
 				&colDim, &rowDim, yk);
 
-<<<<<<< HEAD
 		//LAPACKE_sgels(LAPACK_ROW_MAJOR, 'N', rowDim, colDim, colDim, subMatrix,
 		//		colDim, yk, rowDim);		
-=======
-	//	LAPACKE_sgels(LAPACK_ROW_MAJOR, 'N', rowDim, colDim, colDim, subMatrix,
-	//			colDim, yk, rowDim);		
->>>>>>> double
 
 		for (int p=0; p<numInRow[i]; ++p)
 		{

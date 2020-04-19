@@ -19,10 +19,12 @@
 
 const int ELL_threadSize = 512; 
 
-const int shared_per_block = 36*1024;
+const int shared_per_block = 48*1024;
 const int element_size = 8; //if single precision, 4, if double precision, 8 
 const int vector_cache_size = shared_per_block/element_size;
 const int block_per_part = shared_per_block/(ELL_threadSize*element_size); 
+const int step_p_blk = 8;
+const int threadSizeCOO= 256;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -41,7 +43,7 @@ void initialize_bp(uint32_t num, double *x);
 void initialize_r(uint32_t num, double *rk, double *vector_in);
 void myxpy(const uint32_t dimension, double gamak, const double *x, double *y);
 void matrix_vectorCOO(const uint32_t num_nozeros_compensation, uint32_t *I, 
-		uint32_t *J, double *V, double *x, double *y);
+		uint32_t *J, double *V, double *x, double *y, uint32_t testPoint, const bool tex);
 
 void matrix_vectorELL(const uint32_t num_rows, const uint32_t cal_rows, 
 		const uint32_t num_cols_per_row,  const uint32_t *J,
@@ -53,9 +55,9 @@ void matrix_vectorELL_block(const uint32_t num_rows, const uint32_t cal_rows,
 			const uint32_t* block_data_bias_vec,    
 			const uint32_t *J,
  			const double *V, const double *x, double *y,
-			const bool RODR, const uint32_t rodr_blocks, const uint32_t* part_boundary_d);
+			const bool RODR, const uint32_t rodr_blocks, const uint32_t* part_boundary_d, const bool tex);
 void matrix_vectorHYB(matrixHYB_S_d* inputMatrix, double* vector_in_d,
 		double* vector_out_d, cb_s cb, const uint32_t testPoint,
-		const uint32_t part_size, const uint32_t* part_boundary);
+		const uint32_t part_size, const uint32_t* part_boundary, const bool tex);
 
 #endif
