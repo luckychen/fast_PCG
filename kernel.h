@@ -17,7 +17,7 @@
 #include <cuda.h>
 #include "solver.h"
 
-const int ELL_threadSize = 1024; 
+const int ELL_threadSize = 512; 
 
 const int shared_per_block = 48*1024;
 const int element_size = 8; //if single precision, 4, if double precision, 8 
