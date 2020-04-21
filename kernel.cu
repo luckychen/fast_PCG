@@ -260,9 +260,9 @@ __global__ void ELL_cached_kernel_rodr(const uint32_t* num_cols_per_row_vec,
 		block_data_bias = block_data_bias_vec[block_idx];
 		num_cols_per_row = num_cols_per_row_vec[block_idx];
 		row = i*ELL_threadSize + vec_start + x_idx;
+		data_idx = block_data_bias  + x_idx;//however the data storage is stride with block_rowSize
 		if(row < vec_end){
 			for(uint32_t n=0; n< num_cols_per_row; ++n){
-				data_idx = block_data_bias + block_rowSize*n + x_idx;//however the data storage is stride with block_rowSize
 				val=data[data_idx];
 				col = indices[data_idx];
 				if(col > 0) col  = col - vec_start; 
@@ -271,6 +271,7 @@ __global__ void ELL_cached_kernel_rodr(const uint32_t* num_cols_per_row_vec,
 				//	dot += val*cached_vec[col];
 				//else
 					dot += val*cached_vec[col];
+					data_idx += block_rowSize;
 			}
 			y[row] = dot;
 		}
