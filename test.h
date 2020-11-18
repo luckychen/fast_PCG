@@ -5,7 +5,7 @@
 #include "solver.h"
 #include "kernel.h"
 
-void matrix_vectorTestEHYB(matrixEHYB *inputMatrix, const double* vector_in, double* vector_out,
+void matrix_vectorTestEHYB(matrixEHYB *inputMatrix, const float* vector_in, float* vector_out,
 		int testpoint){
 	FILE *tFile;
 	int track = 0;	
@@ -28,7 +28,7 @@ void matrix_vectorTestEHYB(matrixEHYB *inputMatrix, const double* vector_in, dou
 					for(int n = 0; n < width; ++n){
 						int dataIdx = blockBias + i + n*warpSize;
 						int col = inputMatrix->colBlockELL[dataIdx];
-						double val = inputMatrix->valBlockELL[dataIdx];
+						float val = inputMatrix->valBlockELL[dataIdx];
 						vector_out[row + i] += val*vector_in[col];
 						if(row + i == testpoint && testpoint >= 0){ fprintf(tFile, 
 								"row is %d V is %f vec is %f accum is %f\n", 
@@ -41,7 +41,7 @@ void matrix_vectorTestEHYB(matrixEHYB *inputMatrix, const double* vector_in, dou
 	}
 
 	int dataIdx, col;
-	double val;
+	float val;
 	for(int i = 0; i < inputMatrix->numOfRowER; ++i){
 		int width = inputMatrix->widthVecER[i/warpSize];
 		int bias = inputMatrix->biasVecER[i/warpSize];
@@ -61,7 +61,7 @@ void matrix_vectorTestEHYB(matrixEHYB *inputMatrix, const double* vector_in, dou
 		fclose(tFile);
 }
 
-void matrix_vectorTest(matrixCOO *matrix, const double* vector_in, double* vector_out, 
+void matrix_vectorTest(matrixCOO *matrix, const float* vector_in, float* vector_out, 
 		int testpoint){
 	FILE *tFile;
 	if(testpoint >= 0) {
