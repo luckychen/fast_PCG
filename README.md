@@ -6,7 +6,7 @@ to test the file please fist derived the cache memory size using equation (1) an
 for example for matrix audikw_1, the dimension of matrix is 77651847, we can derive the size 
 of the vector cache in the shared memory: 93KB
 
-The we change the line 23 of the kernel.h (memPerThread)to 93, that is, make the line 93 of kernel.h
+After the vector cache size is determined, change the line 23 of the kernel.h (memPerThread)to 93, that is, make the line 93 of kernel.h
 ```
 const int memPerThread = 93;
 ```
@@ -22,5 +22,5 @@ Then we can test the file as follow:
 
 Where -i indicates the number of iterations for test, and the -m indicates the matrix for test
 where matrix should stored in the directory: ../read as a .mtx file (there should be a directory
-named read at the fathor directory of the executable file, and the matrix file should be a 
+named read at the directory of the executable file, and the matrix file should be a 
 .mtx file)
