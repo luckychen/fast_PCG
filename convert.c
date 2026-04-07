@@ -30,10 +30,16 @@ static void sortRordrListFull(unsigned int dimension,
 	free(rodrSVec);
 }
 
-static void vecsGenBlockELL(matrixCOO* inputMatrix,
-		matrixEHYB* outputMatrix,
-		int* reorderListER,
-		int* numInRowER)
+static void ELL_block_cols_vec_gen_rodr(unsigned int* ELL_block_cols_vec, 
+		unsigned int* size_COO, 
+		const uint32_t* col,
+		unsigned int* block_boundary, 
+		const unsigned int* part_boundary, 
+		const int dimension, 
+		const int max_col, 
+		const int part_num,
+	   	const unsigned int* row_idx,
+		const bool CACHED)
 {
 	/*Reoder functions did an extra iteration 
 	 * which provides numInRowER without ER reordering
@@ -48,9 +54,15 @@ static void vecsGenBlockELL(matrixCOO* inputMatrix,
 	int *numInRow = inputMatrix->numInRow;
 	int *numInRow2 = inputMatrix->numInRow2; 
 
-	int extraRows = 0;
-	int numOfRowER = 0;
-	int toER = 0;
+	*size_COO = 0;
+	block_boundary[0] = 0;
+	uint32_t ELL_val = 0;
+	unsigned int extraRows = 0;
+			
+	for(unsigned int part_idx = 0; part_idx < part_num; ++part_idx){
+		unsigned int block_end = part_boundary[part_idx] + ELL_threadSize*block_per_part;
+		unsigned int part_end = part_boundary[part_idx + 1];
+		unsigned int part_start = part_boundary[part_idx];
 
 	for(int partIdx = 0; partIdx < inputMatrix->nParts; ++partIdx){
 		int partStart = inputMatrix->partBoundary[partIdx];
@@ -76,6 +88,26 @@ static void vecsGenBlockELL(matrixCOO* inputMatrix,
 			if(numCols == 0 && blockStart < partEnd){
 				printf("error at ELL_block convert rodr\n");
 				exit(0);
+			}		
+			for(int row_val = local_start; row_val < local_end; ++row_val){
+				if(CACHED){
+					ELL_val = 0;
+					for(uint32_t j = row_idx[row_val]; j < row_idx[row_val + 1]; ++j){
+						if(col[j] < part_start || col[j] >= block_end)
+							*size_COO += 1;
+						else 
+							ELL_val += 1; 
+					}
+					if(ELL_val > num_cols)
+						*size_COO += ELL_val - num_cols;
+
+				} else {
+
+					unsigned int nonzeros = row_idx[row_val + 1] - row_idx[row_val];
+					if(nonzeros > num_cols){
+						*size_COO += nonzeros - num_cols;	
+					} 
+				}
 			}
 			outputMatrix->widthVecBlockELL[blockIdx] = numCols;
 		}
@@ -97,137 +129,102 @@ static void vecsGenBlockELL(matrixCOO* inputMatrix,
 	outputMatrix->biasVecER = (int*)malloc(ceil(((float) numOfRowER)/warpSize)*sizeof(int));
 }
 
-static void vecsGenER(matrixEHYB* inputMatrix, int* numInRowER, int* reorderListER)
-{
-	int warpIdx, rowLocation;
+static void COO2ELL_block_core(unsigned int* colELL, double* matrixELL,
+		unsigned int* I_COO, unsigned int* J_COO, double* V_COO, const unsigned int size_COO,
+		const unsigned int* row_idx, const unsigned int* numInRow, 
+		const unsigned int loc_num_of_row, 
+        const unsigned int* ELL_block_bias_vec, const unsigned int* ELL_block_cols_vec, 
+		const unsigned int* row_local, const unsigned int* col_local, 
+		const double* matrix_local,
+		unsigned int block_num, 
+		const unsigned int* part_boundary, 
+		volatile bool RODR, bool CACHED)
+{ 
+	unsigned int block_rowSize;
+	unsigned int block_end = 0, part_start = 0, part_end = 0, extraRows = 0;
+	unsigned int irregular=0;
+	block_rowSize = ELL_threadSize;
+	unsigned pointCOO = 0;
+	uint32_t ELL_idx = 0;
+	unsigned int boundary_start, boundary_end;
+	unsigned int part_idx;
+	uint32_t padding = 0;
+	for (unsigned int block_idx = 0; block_idx < block_num; ++block_idx){
+		unsigned int num_cols = ELL_block_cols_vec[block_idx];
+		unsigned int block_bias = ELL_block_bias_vec[block_idx];
+		extraRows = 0;
+		if(RODR){
+			part_idx = block_idx/block_per_part;
+			part_start = part_boundary[part_idx];
+			part_end = part_boundary[part_idx + 1];
+			boundary_start = part_boundary[part_idx] + (block_idx%block_per_part)*ELL_threadSize;
+			block_end = part_boundary[part_idx] + block_per_part*ELL_threadSize;	
 
-	sortRordrListFull(inputMatrix->dimension, reorderListER, numInRowER);
-
-	for(int i = 0; i < inputMatrix->dimension; ++i){
-		//the Row location is not the value of row
-		//it is the value of the ER_rowVec index, which is not equal to row
-		//for example, row 100 is actually 10'th row of ER format submatrix
-		if(numInRowER[i] > 0){
-			rowLocation = reorderListER[i]; 
-			inputMatrix->rowVecER[rowLocation] = i;
-			warpIdx = rowLocation/warpSize;		
-			if(numInRowER[i] > inputMatrix->widthVecER[warpIdx]){
-				inputMatrix->widthVecER[warpIdx] = numInRowER[i];
+			if((block_idx + 1)%block_per_part == 0){
+				if(part_end > block_end){
+				   	extraRows = part_end - block_end;
+					boundary_end = block_end;
+				}
+				else boundary_end = part_end;
+			} else {
+				boundary_end = boundary_start + ELL_threadSize;
 			}
 		}
-	}
+			
+		block_rowSize = boundary_end - boundary_start;
+		for(unsigned int i = 0; i < block_rowSize; ++i){
+			unsigned int row_val = i + boundary_start;
+			if(row_val >= loc_num_of_row) 
+				break;
+			ELL_idx = 0;
+			for(uint32_t j = 0; j < numInRow[row_val]; ++j ){
 
-}
+				uint32_t col_val = col_local[row_idx[row_val] + j] ;
 
-static void COO2EHYBCore(matrixCOO* inputMatrix, 
-		matrixEHYB* outputMatrix,
-		int* reorderListER,
-		int* numInRowER)
-{ 
-	int* partBoundary = inputMatrix->partBoundary;
-	
-	int* rowIdx = inputMatrix->rowIdx;
-	int* numInRow = inputMatrix->numInRow;
-	int* I = inputMatrix->I;
-	int* J = inputMatrix->J;
-	float* V = inputMatrix->V;
-
-	int* widthVecBlockELL = outputMatrix->widthVecBlockELL;
-	int* biasVecBlockELL = outputMatrix->biasVecBlockELL;
-	int* colBlockELL = outputMatrix->colBlockELL; 
-	float* valBlockELL = outputMatrix->valBlockELL; 
-
-	int* widthVecER = outputMatrix->widthVecER;
-	int* rowVecER = outputMatrix->rowVecER; 
-	int* biasVecER = outputMatrix->biasVecER;
-	int* colER = outputMatrix->colER; 
-	float* valER = outputMatrix->valER; 
-
-	int partIdx, partStart, partEnd, fetchEnd, extraRows;
-	int rowLocER, blockIdxER, rowLocInBlockER, biasER, widthER;     	
-	int biasBlockELL, widthBlockELL;     	
-	int irregular=0;
-	int writedInRowELL = 0;
-	int writedInRowER = 0;
-	int padding = 0;
-	int nBlocks = inputMatrix->nParts*blockPerPart;
-	
-
-	for(int blockIdx = 0; blockIdx < nBlocks; ++blockIdx){
-		widthBlockELL = widthVecBlockELL[blockIdx];
-		biasBlockELL = biasVecBlockELL[blockIdx]; 
-		partIdx = blockIdx/blockPerPart;
-		partStart = partBoundary[partIdx];
-		partEnd = partBoundary[partIdx + 1];
-		fetchEnd =  partStart + vectorCacheSize;
-		int blockStart = partStart + warpSize*(blockIdx%blockPerPart);
-		if(blockIdx%blockPerPart == 0)
-			extraRows = partEnd - (partStart + warpSize*blockPerPart);
-
-		for(int i = 0; i < warpSize; ++i){
-			writedInRowER = 0;
-			writedInRowELL= 0;
-			int rowVal = blockStart + i;
-			if(rowVal < partEnd){
-				if(reorderListER[rowVal] < outputMatrix->numOfRowER){
-					rowLocER = reorderListER[rowVal];
-					if(rowVecER[rowLocER] != rowVal){
-						printf("error at rowVecER\n");
-						exit(0);
-					}
-					blockIdxER = rowLocER/warpSize;
-					rowLocInBlockER = rowLocER - blockIdxER*warpSize;
-					biasER = biasVecER[blockIdxER];
-					widthER = widthVecER[blockIdxER];
-				} else {
-					if(numInRowER[rowVal] > 0){
-						printf("error: got to technical not ER line\n");	
-						exit(0);
-					}
-					widthER = -1;
-				}
-				for(int j = 0; j < numInRow[rowVal]; ++j){
-					int tmpIdx = j + rowIdx[rowVal];	
-					if(I[tmpIdx] != rowVal){
-						printf("row val check failed\n");
-						exit(0);
-					}
-					if(J[tmpIdx] < fetchEnd && J[tmpIdx] >= partStart){
-						colBlockELL[biasBlockELL+i+writedInRowELL*warpSize] = J[tmpIdx];
-						valBlockELL[biasBlockELL+i+writedInRowELL*warpSize] = V[tmpIdx];
-						writedInRowELL += 1;	
-						if(writedInRowELL > widthBlockELL){
-							printf("write more elements to blockELL than its width\n");
-							exit(1);
+				if(ELL_idx < num_cols ){
+					if(CACHED == true && (col_val < part_start || col_val >= block_end)){
+						I_COO[pointCOO]=row_local[row_idx[row_val]+j];
+						J_COO[pointCOO]=col_local[row_idx[row_val]+j];
+						V_COO[pointCOO]=matrix_local[row_idx[row_val]+j];
+						pointCOO++;
+						if(pointCOO > size_COO){
+							printf("error at pointCOO %d\n", pointCOO);
+							exit(0);
 						}
 					} else {
-						if(widthER < 0){
-							printf("go to noexist irrigular line\n");
-							exit(0);
-						}	
-						if(writedInRowER >= widthER){
-							printf("error at rowVecER inner with rowVal %d\n", rowVal);
-							exit(0);
-						}
-						colER[biasER+rowLocInBlockER+writedInRowER*warpSize] = J[tmpIdx];
-						valER[biasER+rowLocInBlockER+writedInRowER*warpSize] = V[tmpIdx];
-						writedInRowER += 1;
+					//goto ELL format
+					colELL[block_bias + i + ELL_idx*block_rowSize] = col_val;
+					matrixELL[block_bias + i + ELL_idx*block_rowSize]
+						= matrix_local[row_idx[row_val] + j];
+					ELL_idx += 1;
 					}
+				} else {
+					//assign COO value
+					I_COO[pointCOO]=row_local[row_idx[row_val]+j];
+					J_COO[pointCOO]=col_local[row_idx[row_val]+j];
+					V_COO[pointCOO]=matrix_local[row_idx[row_val]+j];
+					pointCOO++;
+					if(pointCOO > size_COO){
+						printf("error at pointCOO %d at point 1\n", pointCOO);
+						exit(0);
+					}
+
 				}
-				while(writedInRowELL < widthBlockELL){
-					colBlockELL[biasBlockELL+i+writedInRowELL*warpSize] = blockStart + writedInRowELL%warpSize;
-					valBlockELL[biasBlockELL+i+writedInRowELL*warpSize] = 0;
-					writedInRowELL+=1;
+
+			}
+			if(ELL_idx < num_cols){
+				for(uint32_t j = ELL_idx; j < num_cols; ++j){
+					colELL[block_bias + i + j*block_rowSize] = 0;
+					matrixELL[block_bias + i + j*block_rowSize] = 0;
+					if(part_start > 0 && (ELL_idx == 0 || colELL[block_bias] == 0))
+						printf("debug poit at %d\n", row_val);
+					padding += 1;
 				}
-				float val1, val2;
-			} else {
-				for(int j = 0; j < widthBlockELL; ++j){
-					colBlockELL[biasBlockELL+i+j*warpSize] = partStart + j;
-					valBlockELL[biasBlockELL+i+j*warpSize] = 0;
-				}
-			}	
+
+			}
 			
-		}	
+
+		}
 		if(extraRows > 0){
 			for(int rowVal = (partStart + warpSize*blockPerPart); rowVal < partEnd; ++rowVal){
 				if(rowVecER[reorderListER[rowVal]] != rowVal){
@@ -243,8 +240,9 @@ static void COO2EHYBCore(matrixCOO* inputMatrix,
 					colER[biasER+rowLocInBlockER+j*warpSize]=J[rowIdx[rowVal]+j];
 					valER[biasER+rowLocInBlockER+j*warpSize]=V[rowIdx[rowVal]+j];
 					irregular+=1;
-					if(j > widthER){
-						printf("error at ER width%d\n");
+					if(pointCOO > size_COO){
+						printf("error at pointCOO  %d at point 2\n", pointCOO);
+
 						exit(0);
 					}
 				}
@@ -258,11 +256,15 @@ static void COO2EHYBCore(matrixCOO* inputMatrix,
 /*parameters, first line: output of HYB related parameters, 2nd line: output of HYB matrices, 3rd line:input of local COO matrix 
   4th line: ER index (didn't include values), 5th line: input variables*/
 
-void COO2EHYB(matrixCOO* inputMatrix, 
-		matrixEHYB* outputMatrix,
-		int* sizeBlockELL, 
-		int* sizeER) 
-		
+void COO2ELL_block(unsigned int *size_COO, 
+		unsigned int* ELL_block_cols_vec, unsigned int* ELL_block_bias_vec,
+		unsigned int **colELL, double **matrixELL, unsigned int **I_COO, 
+		unsigned int **J_COO, double **V_COO,
+		const unsigned int *row_local, const unsigned int *col_local, const double* matrix_local, 
+		const unsigned int *row_idx, const unsigned int *numInRow, const unsigned int max_col,
+		const unsigned int localMatrixSize, const unsigned int loc_num_of_row, 
+		const unsigned int part_num, const unsigned int block_num, 
+		const unsigned int* part_boundary, bool RODR, bool CACHED)
 { 
 
 	int* reorderListER = (int*)calloc(inputMatrix->dimension, sizeof(int));
@@ -273,35 +275,48 @@ void COO2EHYB(matrixCOO* inputMatrix,
 	outputMatrix->widthVecBlockELL = (int*)calloc(outputMatrix->nParts*blockPerPart, sizeof(int));
 	outputMatrix->biasVecBlockELL = (int*)calloc(outputMatrix->nParts*blockPerPart, sizeof(int));
 	/*block_boundary will not be used outside this function*/
-	vecsGenBlockELL(inputMatrix, outputMatrix, reorderListER, numInRowER);
-
-	*sizeBlockELL = 0;
-	for(int i = 0; i < blockPerPart*outputMatrix->nParts; ++i){
-		outputMatrix->biasVecBlockELL[i] = *sizeBlockELL; 
-		*sizeBlockELL += warpSize*outputMatrix->widthVecBlockELL[i]; 
-	}
-	outputMatrix->valBlockELL = (float*)calloc((*sizeBlockELL), sizeof(float));
-	outputMatrix->colBlockELL = (int*)calloc((*sizeBlockELL), sizeof(int));
-	int blockNumER = ceil((float (outputMatrix->numOfRowER))/warpSize);
-	outputMatrix->biasVecER = (int*)calloc(blockNumER, sizeof(int));
-	outputMatrix->widthVecER = (int*)calloc(blockNumER, sizeof(int));
-
-	vecsGenER(outputMatrix, numInRowER, reorderListER);
-	for(int i = 1; i < blockNumER; ++i){
-		outputMatrix->biasVecER[i] = outputMatrix->biasVecER[i-1] + warpSize*(outputMatrix->widthVecER[i-1]); 
-	}
-	*sizeER = 0;	
-	for(int i = 0; i < blockNumER; ++i){
-		*sizeER += warpSize*outputMatrix->widthVecER[i];
+	unsigned int* block_boundary = (unsigned int*)malloc((block_num + 1) * sizeof(unsigned int));
+	*size_COO=0;	
+	if(RODR){
+		ELL_block_cols_vec_gen_rodr(ELL_block_cols_vec, 
+				size_COO, 
+				col_local,
+				block_boundary,
+				part_boundary, 
+				loc_num_of_row, 
+				max_col, 
+				part_num,
+				row_idx,
+				CACHED);
+	} else {
+		ELL_block_cols_vec_gen(ELL_block_cols_vec, size_COO,
+			loc_num_of_row, max_col, row_idx); 
 	}
 
-	outputMatrix->valER = (float*) calloc((*sizeER), sizeof(float));
-	outputMatrix->colER = (int*) calloc((*sizeER), sizeof(int));
+	if(*size_COO > 0){	
+		*I_COO=(unsigned int *)malloc((*size_COO)*sizeof(unsigned int));
+		*J_COO=(unsigned int *)malloc((*size_COO)*sizeof(unsigned int));
+		*V_COO=(double *)malloc((*size_COO)*sizeof(double));
+	}
+	unsigned int ELL_matrixSize = 0;
+	for(unsigned int i = 0; i < block_num; ++i){
+		ELL_block_bias_vec[i] = ELL_matrixSize;
+		if(RODR){
+			ELL_matrixSize += (block_boundary[i+1] - block_boundary[i])*ELL_block_cols_vec[i];
+		} else {
+			ELL_matrixSize += ELL_threadSize*ELL_block_cols_vec[i];
+		}
+	}
+	ELL_block_bias_vec[block_num] = ELL_matrixSize;
+	*colELL=(unsigned int *)malloc(ELL_matrixSize*sizeof(unsigned int));
+	*matrixELL=(double *)malloc(ELL_matrixSize*sizeof(double));
 
-	COO2EHYBCore(inputMatrix, 
-			outputMatrix,
-			reorderListER,
-			numInRowER);
+	COO2ELL_block_core(*colELL, *matrixELL,
+			*I_COO, *J_COO, *V_COO, *size_COO,
+			row_idx, numInRow, loc_num_of_row, 
+			ELL_block_bias_vec, ELL_block_cols_vec, 
+			row_local, col_local, matrix_local, block_num, 
+			part_boundary, RODR, CACHED);
 	
 	//checkBlockELL(outputMatrix);
 	outputMatrix->reorderListER = reorderListER;

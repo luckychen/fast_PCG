@@ -50,10 +50,39 @@ void solverGPuUnprecondEHYB(matrixCOO* localMatrix,
 	int totalNum = localMatrix->totalNum;
 	matrixEHYB localMatrixEHYB, localMatrixEHYB_d;
 
-	COO2EHYB(localMatrix, 
-			&localMatrixEHYB,
-			&sizeBlockELL,
-			&sizeER);
+        ELL_block_cols_vec = (uint32_t*)malloc(ELL_blocks*sizeof(uint32_t));  
+        ELL_block_bias_vec = (uint32_t*)malloc((ELL_blocks +1)*sizeof(uint32_t));  
+		COO2ELL_block(&totalNumCOO, 
+				ELL_block_cols_vec, 
+				ELL_block_bias_vec,
+				&colELL, 
+				&matrixELL, 
+				&I_COO, 
+				&J_COO, 
+				&V_COO,
+				I, 
+				J, 
+				V, 
+				row_idx, 
+				numInRow, 
+				maxRowNum, 
+				totalNum, 
+				dimension,
+				part_size, 
+				ELL_blocks,
+				part_boundary, 
+				RODR,
+				CACHE);
+		ELL_cuda_malloc_trans_data_block(&col_d, 
+				&V_d, 
+				&ELL_block_cols_vec_d, 
+				&ELL_block_bias_vec_d,
+				colELL, 
+				matrixELL,
+				ELL_block_cols_vec, 
+				ELL_block_bias_vec,
+				dimension, 
+				ELL_blocks);
 
 	cudaMallocTransDataEHYB(&localMatrixEHYB,
 			&localMatrixEHYB_d, 
@@ -107,9 +136,30 @@ void solverGPuUnprecondEHYB(matrixCOO* localMatrix,
 		int errorIdx = 0;
 		float compareError;
 		cudaMemset(bp_d, 0, size1);
-		matrixVectorEHYB(&localMatrixEHYB_d, pk_d, bp_d, -1);
-		cublasSdot(handle,dimension,bp_d,1,pk_d,1,&dotp0);
-		cublasSdot(handle,dimension,rk_d,1,rk_d,1,&dotr0);
+
+		//matrix_vectorTest(localMatrix, vector_in, bp, 0);
+		
+		matrix_vectorHYB(&localMatrixHYB_d, pk_d, bp_d, cb, 0,
+			   part_size, part_boundary_d, true);
+		//cudaMemcpy(bp_g, bp_d, dimension*sizeof(double), cudaMemcpyDeviceToHost);
+		//for(int i = 0; i < dimension; ++i){
+		//	compareError = 	(bp_g[i] - bp[i])/bp[i];
+		//	if(errorIdx == 0  && (compareError > 0.000001 || compareError < -0.00001)){ 	
+		//		printf("bp[%d] of GPU result is %f, test value is %f\n", i, bp_g[i], bp[i]);
+		//		if(errorIdx == 0) errorIdx = i;	
+		//	}
+		//}
+		
+		//matrix_vectorTest(localMatrix, vector_in, bp, errorIdx);
+		//cudaMemset(bp_d, 0, size1);
+		//matrix_vectorHYB(&localMatrixHYB_d, pk_d, bp_d, cb, errorIdx,
+		//	   part_size, part_boundary_d, errorIdx);
+		
+		//for (uint32_t k=0;k<5;k++) printf("pk %d at iter %d is %f\n",k, iter, pk[k]);
+		//printf("CPU start\n");
+		
+		cublasDdot(handle,dimension,bp_d,1,pk_d,1,&dotp0);
+		cublasDdot(handle,dimension,rk_d,1,rk_d,1,&dotr0);
 			
 		alphak=dotr0/dotp0;
 		_alphak = -alphak;
@@ -197,6 +247,276 @@ void solverGPuUnprecondCUSPARSE(matrixCOO* localMatrix,
 	for (int i=0;i<dimension;i++) {
 		doth=doth+vector_in[i]*vector_in[i];
 	}
+
+
+	uint32_t *colELL, *I_COO, *J_COO, ELL_width, ELL_widthL, ELL_widthLP;
+	double* matrixELL, *V_COO;
+	uint32_t *col_d;
+	double *V_d;
+	volatile bool RODR, BLOCK, CACHE;
+	uint32_t *I_COO_d, *J_COO_d;
+	double *V_COO_d;
+	BLOCK = cb.BLOCK;
+	CACHE = cb.CACHE;
+	RODR = cb.RODR;
+    uint32_t ELL_blocks;
+    uint32_t *ELL_block_cols_vec, *ELL_block_cols_vec_d;    
+    uint32_t *ELL_block_bias_vec, *ELL_block_bias_vec_d;	
+	uint32_t *ELL_block_cols_vec_L, *ELL_block_cols_vec_L_d;    
+    uint32_t *ELL_block_bias_vec_L, *ELL_block_bias_vec_L_d;
+	uint32_t *ELL_block_cols_vec_LP, *ELL_block_cols_vec_LP_d;    
+	uint32_t *ELL_block_bias_vec_LP, *ELL_block_bias_vec_LP_d;
+	uint32_t totalNumCOO, totalNumCOO_L, totalNumCOO_LP;
+    if(BLOCK){
+        //RODR will change the number of blocks since it provides cache option
+        if(RODR)
+			ELL_blocks = part_size*block_per_part; 
+		else
+			ELL_blocks = ceil((double) dimension/ELL_threadSize);
+
+        ELL_block_cols_vec = (uint32_t*)malloc(ELL_blocks*sizeof(uint32_t));  
+        ELL_block_bias_vec = (uint32_t*)malloc((ELL_blocks +1)*sizeof(uint32_t));  
+		
+		COO2ELL_block(&totalNumCOO, 
+				ELL_block_cols_vec, 
+				ELL_block_bias_vec,
+				&colELL, 
+				&matrixELL, 
+				&I_COO, 
+				&J_COO, 
+				&V_COO,
+				I, 
+				J, 
+				V, 
+				row_idx, 
+				numInRow, 
+				maxRowNum, 
+				totalNum, 
+				dimension,
+				part_size, 
+				ELL_blocks,
+				part_boundary, 
+				RODR,
+				CACHE);
+		ELL_cuda_malloc_trans_data_block(&col_d, 
+				&V_d, 
+				&ELL_block_cols_vec_d, 
+				&ELL_block_bias_vec_d,
+				colELL, 
+				matrixELL,
+				ELL_block_cols_vec, 
+				ELL_block_bias_vec,
+				dimension, 
+				ELL_blocks);
+	} else {
+		COO2ELL(I,J,V,&colELL,&matrixELL,&I_COO, &J_COO, &V_COO, 
+			numInRow, row_idx, totalNum, dimension, &totalNumCOO, maxRowNum, &ELL_width);
+
+        ELL_cuda_malloc_trans_data(&col_d, &V_d, colELL, matrixELL, dimension, ELL_width);
+	}
+	
+	if (totalNumCOO>0){
+        COO_cuda_malloc_trans_data(&I_COO_d, &J_COO_d, &V_COO_d, 
+				I_COO, J_COO, V_COO, 
+				dimension, totalNumCOO);
+	}	
+
+	/*matrix L'*/
+	uint32_t *colELL_precond, *I_COO_L, *J_COO_L;
+	double* matrixELL_precond, *V_COO_L;
+	uint32_t *col_precond_d;
+	double *V_precond_d;
+	uint32_t *I_COO_L_d, *J_COO_L_d;
+	double *V_COO_L_d;
+
+    if(BLOCK){
+		ELL_block_cols_vec_L = (uint32_t*)malloc(ELL_blocks*sizeof(uint32_t));  
+        ELL_block_bias_vec_L = (uint32_t*)malloc((ELL_blocks + 1)*sizeof(uint32_t));
+		COO2ELL_block(&totalNumCOO_L, 
+				ELL_block_cols_vec_L, 
+				ELL_block_bias_vec_L,
+				&colELL_precond, 
+				&matrixELL_precond,
+			   	&I_COO_L, &J_COO_L, &V_COO_L,
+				I_precond, J_precond, V_precond, 
+				row_idxL, numInRowL, maxRowNumPrecond,
+				totalNumPrecond, dimension, part_size,
+				ELL_blocks, part_boundary, RODR, CACHE);
+		ELL_cuda_malloc_trans_data_block(&col_precond_d, &V_precond_d, 
+				&ELL_block_cols_vec_L_d, &ELL_block_bias_vec_L_d,
+				colELL_precond, matrixELL_precond,
+				ELL_block_cols_vec_L, ELL_block_bias_vec_L,
+				dimension, ELL_blocks);
+	} else {
+		COO2ELL(I_precond,J_precond,V_precond,&colELL_precond, &matrixELL_precond, 
+				&I_COO_L, &J_COO_L, &V_COO_L, numInRowL, row_idxL, totalNumPrecond, 
+				dimension, &totalNumCOO_L, maxRowNumPrecond, &ELL_widthL);
+        ELL_cuda_malloc_trans_data(&col_precond_d, &V_precond_d, colELL_precond, 
+				matrixELL_precond, dimension, ELL_widthL);
+	}
+	//printf("ELL_widthL is %d, and totalNumCOO_L is %d\n", ELL_widthL, totalNumCOO_L);
+	if (totalNumCOO_L>0){
+		COO_cuda_malloc_trans_data(&I_COO_L_d, &J_COO_L_d, &V_COO_L_d, 
+				I_COO_L, J_COO_L, V_COO_L, 
+				dimension, totalNumCOO_L);
+	}	
+
+	/*matrix L*/
+	uint32_t *colELL_precondP, *I_COO_LP, *J_COO_LP;
+	double* matrixELL_precondP, *V_COO_LP;
+	uint32_t *col_precondP_d;
+	double *V_precondP_d;
+	uint32_t *I_COO_LP_d, *J_COO_LP_d;
+	double *V_COO_LP_d;
+
+	if(FACT){
+		if(BLOCK){
+			ELL_block_cols_vec_LP = (uint32_t*)malloc(ELL_blocks*sizeof(uint32_t));  
+			ELL_block_bias_vec_LP = (uint32_t*)malloc((ELL_blocks + 1)*sizeof(uint32_t));
+			COO2ELL_block(&totalNumCOO_LP, ELL_block_cols_vec_LP, ELL_block_bias_vec_LP,
+					&colELL_precondP, &matrixELL_precondP, &I_COO_LP, &J_COO_LP, &V_COO_LP,
+					I_precondP, J_precondP, V_precondP, 
+					row_idxLP, numInRowLP, maxRowNumPrecondP, 
+					totalNumPrecondP, dimension, part_size,
+					ELL_blocks, part_boundary, RODR, CACHE);
+			printf("the last cols_vec_LP is %d\n", ELL_block_cols_vec_LP[ELL_blocks - 1]);
+			ELL_cuda_malloc_trans_data_block(&col_precondP_d, &V_precondP_d, 
+					&ELL_block_cols_vec_LP_d, &ELL_block_bias_vec_LP_d,
+					colELL_precondP, matrixELL_precondP,
+					ELL_block_cols_vec_LP, ELL_block_bias_vec_LP,
+					dimension, ELL_blocks);
+		} else {
+			COO2ELL(I_precondP,J_precondP,V_precondP,&colELL_precondP, &matrixELL_precondP, 
+					&I_COO_LP, &J_COO_LP, &V_COO_LP, numInRowLP, row_idxLP, totalNumPrecondP, 
+					dimension, &totalNumCOO_LP, maxRowNumPrecondP, &ELL_widthLP);
+			ELL_cuda_malloc_trans_data(&col_precondP_d, &V_precondP_d, colELL_precondP, 
+					matrixELL_precondP, dimension, ELL_widthLP);
+		}
+		//printf("ELL_widthL is %d, and totalNumCOO_L is %d\n", ELL_widthL, totalNumCOO_L);
+		if (totalNumCOO_LP>0){
+			COO_cuda_malloc_trans_data(&I_COO_LP_d, &J_COO_LP_d, &V_COO_LP_d, 
+					I_COO_LP, J_COO_LP, V_COO_LP, 
+					dimension, totalNumCOO_LP);
+		}
+	}	
+	printf("totalNumCOO is  %d totalNumCOO_L is %d, and totalNumCOO_LP is %d\n", totalNumCOO, totalNumCOO_L, totalNumCOO_LP);
+	//printf("fill rate original is %f, fill rate L is %f, fill rate lp is %f\n", calFilledRate(totalNum, ELL_blocks,), calFilledRate, calFilledRate);
+	
+	
+	uint32_t* part_boundary_d;
+	
+	double *rk=(double *)malloc(size0);
+	double *zk=(double *)malloc(size0);
+	double *zk_1=(double *)malloc(size0);
+	
+	double *vector_in_d;
+	double alphak,betak,dotp0, dotrz0,dotrz1,doth,alphak_1,dotr0;
+	
+	//double dotz0,dotz0_compare;
+	
+	double error=10000;
+	double threshold;
+	
+	if(BLOCK && RODR){
+	   	cudaMalloc((void **) &part_boundary_d, (part_size +1)*sizeof(uint32_t));
+		cudaMemcpy(part_boundary_d, part_boundary, 
+				(part_size +1)*sizeof(uint32_t), cudaMemcpyHostToDevice);
+	}
+
+	cudaMalloc((void **) &vector_in_d,size0);
+	//cudaMalloc((void **) &vector_out_d,size0);
+	cudaMemcpy(vector_in_d, vector_in, size0, cudaMemcpyHostToDevice);	
+	
+	//
+	initialize_bp(dimension,zk_d);
+	initialize_bp(dimension,zk1_d);
+	initialize_r(dimension, rk_d, vector_in_d);
+
+	double* pkT = (double*) malloc(dimension*sizeof(double));	
+	double* bpT = (double*) calloc(dimension, sizeof(double));	
+	double* bp_g = (double*) calloc(dimension, sizeof(double));
+
+	cublasHandle_t handle;
+	cublasCreate(&handle);			
+	double* zk1T = (double*) calloc(dimension, sizeof(double));	
+	double* rkT = (double*) calloc(dimension, sizeof(double));	
+	double* zk1_g = (double*) calloc(dimension, sizeof(double));
+	if(!BLOCK){
+		matrix_vectorELL(dimension, dimension, ELL_widthL, col_precond_d,V_precond_d,
+				rk_d,zk1_d, false, 0, NULL);
+					
+	} else {
+		if(RODR){
+			matrix_vectorELL_block(dimension, 0, ELL_block_cols_vec_L_d, 
+					ELL_block_bias_vec_L_d,
+                    col_precond_d,V_precond_d,rk_d,zk1_d,
+					CACHE, part_size, part_boundary_d, tex);
+		}
+		else{
+			matrix_vectorELL_block(dimension, 0, ELL_block_cols_vec_L_d, 
+					ELL_block_bias_vec_L_d,
+					col_precond_d,V_precond_d,rk_d,zk1_d,
+					false, 0, NULL, tex);
+		}
+	}
+	if (totalNumCOO_L>0) matrix_vectorCOO(totalNumCOO_L, I_COO_L_d, J_COO_L_d, V_COO_L_d, 
+									rk_d, zk1_d, 0, tex);
+	cudaMemcpy(zk1_g, zk1_d, dimension*sizeof(double), cudaMemcpyDeviceToHost);
+	uint32_t errorIdx = 0;
+	float compareError;
+	matrix_vectorTest(localMatrix_precond, vector_in, zk1T, 0);
+	for(int i = 0; i < dimension; ++i){
+		rkT[i] = vector_in[i];
+		compareError = 	(zk1T[i] - zk1_g[i])/zk1_g[i];
+		if(errorIdx == 0  && (compareError > 0.000001 || compareError < -0.00001)){ 	
+			printf("zk1[%d] of GPU result is %f, test value is %f\n", i, zk1_g[i], zk1T[i]);
+			if(errorIdx == 0) errorIdx = i;	
+		}
+	}
+	if(errorIdx > 0){
+		//matrix_vectorTest(localMatrix_precond, vector_in, zk1T, errorIdx);
+		matrix_vectorELL_block(dimension, errorIdx, ELL_block_cols_vec_L_d, 
+				ELL_block_bias_vec_L_d,
+				col_precond_d,V_precond_d,rk_d,zk1_d,
+				CACHE, part_size, part_boundary_d, tex);
+	}
+	if(FACT){	
+		if (!BLOCK) {
+			matrix_vectorELL(dimension, dimension, ELL_widthLP, col_precondP_d, 
+					V_precondP_d, zk1_d, zk_d, false, 0, NULL);
+		} else {
+			if(RODR){
+				matrix_vectorELL_block(dimension, 0, ELL_block_cols_vec_LP_d, ELL_block_bias_vec_LP_d,  
+						col_precondP_d,V_precondP_d, 
+						zk1_d, zk_d, CACHE, part_size, part_boundary_d, tex); 
+
+			} else {
+				matrix_vectorELL_block(dimension, 0, ELL_block_cols_vec_LP_d, ELL_block_bias_vec_LP_d,  
+						col_precondP_d, V_precondP_d, 
+						zk1_d, zk_d, false, 0, NULL, tex);
+
+			}	
+		}
+		if (totalNumCOO_LP>0) matrix_vectorCOO(totalNumCOO_LP, I_COO_LP_d, J_COO_LP_d, V_COO_LP_d, zk1_d, zk_d, 0, tex);
+	}	
+	//double* zkT = (double*) calloc(dimension, sizeof(double));	
+	//double* zk_g = (double*) calloc(dimension, sizeof(double));	
+	//cudaMemcpy(zk_g, zk_d, dimension*sizeof(double), cudaMemcpyDeviceToHost);
+	//matrix_vectorTest(localMatrix_precondP, zk1T, zkT);
+	//for(int i = 0; i < dimension; ++i){
+	//	pkT[i] = zkT[i];
+	//	if(abs((zkT[i] - zk_g[i])/zk_g[i]) > 0.000001) 	
+	//		printf("zk[%d] of GPU result is %f, test value is %f\n", i, zk_g[i], zkT[i]);
+	//}
+	//cublasDdot(handle,dimension,zk_d,1,zk_d,1,&dotz0);
+	//for (uint32_t i=0;i<5;i++) printf("dotz0 is %f, dotz0_compare is %f\n",dotz0,dotz0_compare);
+	//give an initial value as r0, p0, and set all 
+	initialize_all(dimension,pk_d,bp_d,x_d,zk_d,vector_in_d);
+	
+	
+	cublasDdot(handle, dimension,vector_in_d,1,vector_in_d,1,&doth);
+	double errorNorm=sqrt(doth);
+	uint32_t iter=0;
 	struct timeval start1, end1;
 	float *bp=(float *) malloc(size1);
 	float *bp_g =(float *) malloc(size1);

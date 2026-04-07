@@ -7,7 +7,16 @@
 #define thread_size 512
 #define block_size2 16
 #define thread_size2 512
-#define warpSize 32
+#define WARP_SIZE 32
+
+//static __inline__ __device__ double fetch_double(uint2 p){
+//	    return __hiloint2double(p.y, p.x);
+//}
+//
+//texture<uint2, 1> texInput;
+//texture<float, 1> texInputFloat;
+
+//static bool texInited = false;
 
 /*kernel function for initialize*/
 __global__ void kernelInitialize(const int num, float *x)
@@ -73,51 +82,55 @@ __global__ void kernelER(const int numOfRowER,
 	}
 }
 
-__global__ void kernelCachedBlockedELL_test(const int* widthVecBlockELL,
-		const int* biasVecBlockELL,  
-		const int *colBlockELL, 
-		const float *valBlockELL, 
-		const float * x,
-		float * y,
-		const int* partBoundary,
-		const int testPoint)
-{
-	int partIdx = blockIdx.x; 
-	int xIdx = threadIdx.x;
-	__shared__ volatile float cachedVec[vectorCacheSize];  
-	int vecStart = partBoundary[blockIdx.x];
-	int vecEnd = partBoundary[blockIdx.x + 1];
-	int warpLane = xIdx - ((xIdx>>5)<<5); //xIdx%32 = xIdx - (xIdx/32)*32)
-	int row = 0;
-	int blockStartIdx = blockPerPart*partIdx;	
-	for (int i = xIdx; i < vectorCacheSize; i += threadELL){
-		cachedVec[i] = x[i + vecStart];
+			if (val != 0){
+				dot += val* x[col];
+			}
+		}
+		y[row]+=dot;
 	}
-	
-	__syncthreads();
-	float val, dot;
-	int dataIdx; 
-	int col;
-	int biasIdx, bias, width;
+}
 
-	#pragma unroll
-	for(int i = 0; i < loopInKernel; ++i){//the thread is step with stride threadELL
-		dot = 0;
-		//each iteration go through (1024/warpSize)=32 blocks in blockELL format, which is i >> 5
-		//the warpIdx is xIdx>>5
-		row = i*threadELL + vecStart + xIdx;
-		if(row < vecEnd){
-			biasIdx = i*warpPerBlock + (xIdx>>5) + blockStartIdx;
-			bias = biasVecBlockELL[biasIdx]; 
-			width = widthVecBlockELL[biasIdx];
-			for(int n=0; n< width; ++n){
-				dataIdx = bias + warpSize*n + warpLane;//however the data storage is stride with block_rowSize
-				val= valBlockELL[dataIdx];
-				col = colBlockELL[dataIdx]- vecStart;
-				if(row == testPoint)
-					dot += val*cachedVec[col] - 1 + 0.999;
-				else
-					dot += val*cachedVec[col];
+__global__ void ELL_kernel_rodr(const uint32_t* num_cols_per_row_vec,
+		const uint32_t* block_data_bias_vec,  
+		const uint32_t *indices, const double *data, const double * x,
+		double * y,
+		const uint32_t* part_boundary,
+		const bool tex)
+{
+	uint32_t part_idx = blockIdx.x; 
+	uint32_t x_idx = threadIdx.x;
+	uint32_t vec_start = part_boundary[blockIdx.x];
+	uint32_t vec_end = part_boundary[blockIdx.x + 1];
+	uint32_t row = 0;
+	double val, dot;
+	uint32_t block_idx, data_idx, col;
+	uint32_t block_rowSize, block_data_bias, num_cols_per_row;
+	uint32_t block_base = part_idx * block_per_part;
+		
+	uint32_t endBlockRow;
+	if(vec_end >= vec_start+block_per_part*ELL_threadSize)
+		endBlockRow = ELL_threadSize; 
+	else 
+		endBlockRow = vec_end - (vec_start+(block_per_part - 1)*ELL_threadSize);
+
+	for(uint32_t i = 0; i < block_per_part; ++i){//the thread is step with stride ELL_threadSize
+		dot =0;
+		block_rowSize = ELL_threadSize;
+		block_idx = block_base + i;
+		if(i == (block_per_part -1)){
+			block_rowSize = endBlockRow;
+		}
+		block_data_bias = block_data_bias_vec[block_idx];
+		num_cols_per_row = num_cols_per_row_vec[block_idx];//cache will work if it is shared by all threads
+		row = i*ELL_threadSize + vec_start + x_idx;
+		if(row < vec_end){
+			for(uint32_t n=0; n< num_cols_per_row; ++n){
+				data_idx = block_data_bias + block_rowSize*n + x_idx;//however the data storage is stride with block_rowSize
+				col=indices[data_idx];
+				val=data[data_idx];
+				//if(val != 0)
+					dot += val* x[col];
+
 			}
 			//if(row == testPoint)
 			//	y[row] = dot+0.01;
@@ -135,42 +148,104 @@ __global__ void kernelCachedBlockedELL(const int* widthVecBlockELL,
 		float * y,
 		const int* partBoundary)
 {
-	int partIdx = blockIdx.x; 
-	int xIdx = threadIdx.x;
-	__shared__ volatile float cachedVec[vectorCacheSize];  
-	//__shared__ volatile int sharedBias[blockPerPart];  
-	//__shared__ volatile int sharedWidth[blockPerPart];  
-	int vecStart = partBoundary[blockIdx.x];
-	int vecEnd = partBoundary[blockIdx.x + 1];
-	int warpLane = xIdx - ((xIdx>>5)<<5); //xIdx%32 = xIdx - (xIdx/32)*32)
-	int row = 0;
-	int blockStartIdx = blockPerPart*partIdx;	
-	for (int i = xIdx; i < vectorCacheSize; i += threadELL){
-		cachedVec[i] = x[i + vecStart];
-	}
-	//if(xIdx < blockPerPart){
-	//	sharedBias[xIdx] = biasVecBlockELL[blockStartIdx + xIdx];	
-	//	sharedWidth[xIdx] = widthVecBlockELL[blockStartIdx+ xIdx];	
-	//}
-	__syncthreads();
-	float val, dot;
-	int dataIdx; 
-	int col;
-	int biasIdx, bias, width;
+	uint32_t part_idx = blockIdx.x; 
+	uint32_t x_idx = threadIdx.x;
+	uint32_t vec_start = part_boundary[blockIdx.x];
+	uint32_t vec_end = part_boundary[blockIdx.x + 1];
+	uint32_t row = 0;
+	double val, dot;
+	uint32_t block_idx, data_idx, col;
+	uint32_t block_rowSize, block_data_bias, num_cols_per_row;
+	uint32_t block_base = part_idx * block_per_part;
+		
+	uint32_t endBlockRow;
+	if(vec_end >= vec_start+block_per_part*ELL_threadSize)
+		endBlockRow = ELL_threadSize; 
+	else 
+		endBlockRow = vec_end - (vec_start+(block_per_part - 1)*ELL_threadSize);
 
-	#pragma unroll
-	for(int i = 0; i < loopInKernel; ++i){//the thread is step with stride threadELL
-		dot = 0;
-		row = i*threadELL + vecStart + xIdx;
-		if(row < vecEnd){
-			biasIdx = i*warpPerBlock + (xIdx>>5) + blockStartIdx;
-			bias = biasVecBlockELL[biasIdx]; 
-			width = widthVecBlockELL[biasIdx];
-			for(int n=0; n< width; ++n){
-				dataIdx = bias + warpSize*n + warpLane;//however the data storage is stride with block_rowSize
-				val= valBlockELL[dataIdx];
-				col = colBlockELL[dataIdx]- vecStart;
-				dot += val*cachedVec[col];
+
+	for(uint32_t i = 0; i < block_per_part; ++i){//the thread is step with stride ELL_threadSize
+		dot =0;
+		block_rowSize = ELL_threadSize;
+		block_idx = block_base + i;
+		if(i == (block_per_part -1)){
+			block_rowSize = endBlockRow;
+		}
+		block_data_bias = block_data_bias_vec[block_idx];
+		num_cols_per_row = num_cols_per_row_vec[block_idx];
+		row = i*ELL_threadSize + vec_start + x_idx;
+		if(row < vec_end){
+			for(uint32_t n=0; n< num_cols_per_row; ++n){
+				data_idx = block_data_bias + block_rowSize*n + x_idx;//however the data storage is stride with block_rowSize
+				col=indices[data_idx];
+				val=data[data_idx];
+				if(val != 0){
+					if(row == testPoint)
+						dot = dot + val* x[col];
+					else
+						dot += val* x[col];
+				}
+			}
+			if(row == testPoint)
+				y[row] = dot + 1 - 0.999;
+			else
+				y[row] = dot;
+		}
+		block_idx += 1;
+	}		
+}
+
+__global__ void ELL_cached_kernel_rodr(const uint32_t* num_cols_per_row_vec,
+		const uint32_t* block_data_bias_vec,  
+		const uint32_t *indices, const double *data, const double * x,
+		double * y,
+		const uint32_t* part_boundary,
+		const bool tex)
+{
+	uint32_t part_idx = blockIdx.x; 
+	uint32_t x_idx = threadIdx.x;
+	__shared__ volatile double cached_vec[vector_cache_size];  
+	int vec_start = part_boundary[blockIdx.x];
+	int vec_end = part_boundary[blockIdx.x + 1];
+	uint32_t row = 0;
+
+	for (uint32_t i = x_idx; i < vector_cache_size; i += ELL_threadSize){
+		cached_vec[i] = x[i + vec_start];
+	}
+	double val, dot;
+	uint32_t block_idx, data_idx; 
+	uint32_t col;
+	uint32_t block_rowSize, block_data_bias, num_cols_per_row;
+	uint32_t block_base = part_idx * block_per_part;
+	uint32_t endBlockRow;
+	if(vec_end >= vec_start+block_per_part*ELL_threadSize)
+		endBlockRow = ELL_threadSize; 
+	else 
+		endBlockRow = vec_end - (vec_start+(block_per_part - 1)*ELL_threadSize);
+
+	for(uint32_t i = 0; i < block_per_part; ++i){//the thread is step with stride ELL_threadSize
+		dot =0;
+		block_rowSize = ELL_threadSize;
+		block_idx = block_base + i;
+		if(i == (block_per_part -1)){
+			block_rowSize = endBlockRow;
+		}
+		block_data_bias = block_data_bias_vec[block_idx];
+		num_cols_per_row = num_cols_per_row_vec[block_idx];
+		row = i*ELL_threadSize + vec_start + x_idx;
+		data_idx = block_data_bias  + x_idx;//however the data storage is stride with block_rowSize
+		if(row < vec_end){
+			for(uint32_t n=0; n< num_cols_per_row; ++n){
+				val=data[data_idx];
+				col = indices[data_idx];
+				if(col > 0) col  = col - vec_start; 
+				//col = (indices[data_idx]<<1)/(indices[data_idx]+1)*(indices[data_idx] - vec_start);
+				//if(indices[data_idx] == 0 && row > 0)
+				//	dot += val*cached_vec[col];
+				//else
+					dot += val*cached_vec[col];
+					data_idx += block_rowSize;
 			}
 			//if(row == testPoint)
 			//	y[row] = dot+0.01;
@@ -178,6 +253,196 @@ __global__ void kernelCachedBlockedELL(const int* widthVecBlockELL,
 			y[row] = dot;
 		}
 	}
+	
+
+}
+__global__ void COO_shared2(const uint32_t num_nozeros,
+				const uint32_t *I, const uint32_t *J, const double *V,
+				const double *x, double *y)
+{
+	__shared__ volatile int rows[48*thread_size/WARP_SIZE];  //why using 48? because we need 16 additional junk elements
+	__shared__ volatile double vals[thread_size];
+
+	uint32_t thread_lane= threadIdx.x & (WARP_SIZE-1); //great idea! think about it
+	uint32_t warp_id = threadIdx.x / WARP_SIZE;
+	/*how about the interval is not the multiple of warp_size?*/
+	//uint32_t iteration_end=((interval_end)/WARP_SIZE)*WARP_SIZE;
+
+	uint32_t idx=16*(threadIdx.x/32+1) + threadIdx.x;//every warp has 16 "junk" rows elements
+	rows[idx-16]=-1;
+	rows[idx]=0;	
+	
+	uint32_t n;
+	uint32_t row;
+	double val;
+	
+	for(uint16_t it = 0;  it < step_p_blk; ++it)
+	{
+		n = blockDim.x*blockIdx.x*step_p_blk + warp_id*WARP_SIZE*step_p_blk 
+			+ it*WARP_SIZE + thread_lane;	
+		if(n < num_nozeros){
+			row =I[n];
+			//double val=V[n]*fetch_x(J[n], x);
+			val=V[n]*x[J[n]];
+
+			rows[idx] =row;
+			vals[threadIdx.x] =val;
+
+			if(row == rows[idx -  1]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  1]; }
+			if(row == rows[idx -  2]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  2]; }
+			if(row == rows[idx -  4]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  4]; }
+			if(row == rows[idx -  8]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  8]; }
+			if(row == rows[idx - 16]) { vals[threadIdx.x] = val = val + vals[threadIdx.x - 16]; }
+
+			if(thread_lane == 31 || n == num_nozeros -1){
+				//if(row == testPoint){
+				//	y[row] += val;
+				//}else
+				atomicAdd(&y[row],val);  
+			}else{
+				if(row != rows[idx + 1]){
+					//	if(row == testPoint ){
+					//		y[row] += val;
+					//	} else
+					//y[row] += val;
+					atomicAdd(&y[row],val);  
+
+				}
+			}
+		}
+	}
+}
+
+//__global__ void COO_shared_tex(const uint32_t num_nozeros,
+//				const uint32_t *I, const uint32_t *J, const double *V,
+//				const double *x, double *y)
+//{
+//	__shared__ volatile int rows[48*thread_size/WARP_SIZE];  //why using 48? because we need 16 additional junk elements
+//	__shared__ volatile double vals[thread_size];
+//
+//	uint32_t thread_lane= threadIdx.x & (WARP_SIZE-1); //great idea! think about it
+//	uint32_t warp_id = threadIdx.x / WARP_SIZE;
+//	/*how about the interval is not the multiple of warp_size?*/
+//	//uint32_t iteration_end=((interval_end)/WARP_SIZE)*WARP_SIZE;
+//
+//	uint32_t idx=16*(threadIdx.x/32+1) + threadIdx.x;//every warp has 16 "junk" rows elements
+//	rows[idx-16]=-1;
+//	rows[idx]=0;	
+//	
+//	uint32_t n;
+//	uint32_t row;
+//	double val;
+//	
+//	for(uint16_t it = 0;  it < step_p_blk; ++it)
+//	{
+//		n = blockDim.x*blockIdx.x*step_p_blk + warp_id*WARP_SIZE*step_p_blk 
+//			+ it*WARP_SIZE + thread_lane;	
+//		if(n < num_nozeros){
+//			row =I[n];
+//			//val=V[n]*fetch_double(tex1Dfetch(texInput, J[n]));
+//			val=V[n]*x[J[n]];
+//
+//			rows[idx] =row;
+//			vals[threadIdx.x] =val;
+//
+//			if(row == rows[idx -  1]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  1]; }
+//			if(row == rows[idx -  2]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  2]; }
+//			if(row == rows[idx -  4]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  4]; }
+//			if(row == rows[idx -  8]) { vals[threadIdx.x] = val = val + vals[threadIdx.x -  8]; }
+//			if(row == rows[idx - 16]) { vals[threadIdx.x] = val = val + vals[threadIdx.x - 16]; }
+//
+//			if(thread_lane == 31 || n == num_nozeros -1){
+//				//if(row == testPoint){
+//				//	y[row] += val;
+//				//}else
+//				atomicAdd(&y[row],val);  
+//			}else{
+//				if(row != rows[idx + 1]){
+//					//	if(row == testPoint ){
+//					//		y[row] += val;
+//					//	} else
+//					//y[row] += val;
+//					atomicAdd(&y[row],val);  
+//
+//				}
+//			}
+//		}
+//	}
+//}
+
+
+
+__global__ void COO_atomic(const uint32_t num_nozeros, const uint32_t interval_size, 
+				const uint32_t *I, const uint32_t *J, const double *V, 
+				const double *x, double *y, bool tex, uint32_t testPoint) 
+{
+	
+	uint32_t thread_id = blockDim.x*blockIdx.x + threadIdx.x;
+	uint32_t thread_lane= threadIdx.x & (WARP_SIZE-1); //great idea! think about it
+	uint32_t warp_id = thread_id / WARP_SIZE;
+	
+	uint32_t interval_begin=warp_id*interval_size;
+	uint32_t interval_end =min(interval_begin+interval_size, num_nozeros);
+	/*how about the interval is not the multiple of warp_size?*/
+	//uint32_t iteration_end=((interval_end)/WARP_SIZE)*WARP_SIZE;
+	int row;
+	double val;
+	uint32_t row_tmp;
+	double val_tmp;
+	
+	uint32_t n;
+	n=interval_begin+thread_lane;
+	while (n< interval_end)
+	{
+		row = I[n];
+		val = V[n]*x[J[n]];
+		
+		//double val=V[n]*x[J[n]];
+		val_tmp = __shfl_up_sync(FULL_MASK, val, 1);
+		row_tmp = __shfl_up_sync(FULL_MASK, row, 1);
+		if(thread_lane > 0 && row == row_tmp) { 
+			val += val_tmp; 
+		} 
+		val_tmp = __shfl_up_sync(FULL_MASK, val, 2);
+		row_tmp = __shfl_up_sync(FULL_MASK, row, 2);
+		if(thread_lane > 1 && row == row_tmp) { 
+			val += val_tmp; 
+		}
+		val_tmp = __shfl_up_sync(FULL_MASK, val, 4);
+		row_tmp = __shfl_up_sync(FULL_MASK, row, 4);
+		if(thread_lane > 3 && row == row_tmp) { 
+			val += val_tmp; 
+		}
+		val_tmp = __shfl_up_sync(FULL_MASK, val, 8);
+		row_tmp = __shfl_up_sync(FULL_MASK, row, 8);
+		if(thread_lane > 7 && row == row_tmp) { 
+			val += val_tmp; 
+		}
+		val_tmp = __shfl_up_sync(FULL_MASK, val, 16);
+		row_tmp = __shfl_up_sync(FULL_MASK, row, 16);
+		if(thread_lane > 15 && row == row_tmp) { 
+			val += val_tmp; 
+		}
+		row_tmp = __shfl_down_sync(FULL_MASK, row, 1);
+		if(thread_lane == 31 || n == interval_end -1){
+			//if(row == testPoint){
+			//	y[row] += val;
+			//}else
+				atomicAdd(&y[row],val);  
+		}else{
+			if(row != row_tmp){
+			//	if(row == testPoint ){
+			//		y[row] += val;
+			//	} else
+					y[row] += val;
+					//atomicAdd(&y[row],val);  
+				
+			}
+		}	
+		n+=WARP_SIZE;
+	}
+	
+	
 }
 
 
@@ -227,15 +492,16 @@ void matrixVectorBlockELL(const int nParts, const int testPoint,
 		const int* partBoundary_d,
 		const float *x_d, float *y_d)
 {
-
-		if(testPoint >= 0){
-			kernelCachedBlockedELL_test<<<nParts, threadELL>>>(widthVecBlockELL_d,
-					biasVecBlockELL_d,  
-					colBlockELL_d, valBlockELL_d, 
-					x_d,
-					y_d,
-					partBoundary_d,
-					testPoint);
+	uint32_t ELL_blocks = ceil((double) num_rows/ELL_threadSize);
+	//printf("ELL_blocks is %d\n", ELL_blocks);
+	//bind_x(x);
+	
+	if(rodr_blocks > 0){
+		if(CACHE){	
+			ELL_cached_kernel_rodr<<<rodr_blocks, ELL_threadSize>>>(num_cols_per_row_vec, 
+					block_data_bias_vec,
+					J, V, x, y, part_boundary_d, tex);
+			//gpuErrchk( cudaPeekAtLastError() );
 		} else {
 			kernelCachedBlockedELL<<<nParts, threadELL>>>(widthVecBlockELL_d,
 					biasVecBlockELL_d,  
@@ -245,47 +511,85 @@ void matrixVectorBlockELL(const int nParts, const int testPoint,
 					partBoundary_d);
 		}
 
-}
-
-void matrixVectorER(const int numOfRowER, 
-		const int* rowVecER_d, const int* biasVecER_d, 
-		const int* widthVecER_d, 
-		const int* colER_d, const float* valER_d,
-		const float* vectorIn_d, float* vectorOut_d)
-{
-
-	int blockSizeLocal;
-	blockSizeLocal=ceil(((float) numOfRowER)/threadELL);//for data with 2 million elements, we have interval size 200
-	kernelER<<<blockSizeLocal, threadELL>>>(numOfRowER, 
-			rowVecER_d, 
-			biasVecER_d, 
-			widthVecER_d,
-			colER_d, 
-			valER_d, 
-			vectorIn_d, 
-			vectorOut_d);
-
-}
-
-void matrixVectorEHYB(matrixEHYB* inputMatrix_d, float* vectorIn_d,
-		float* vectorOut_d, const int testPoint)
-{
-
-	matrixVectorBlockELL(inputMatrix_d->nParts, 
-			testPoint,
-			inputMatrix_d->widthVecBlockELL,
-			inputMatrix_d->biasVecBlockELL,  
-			inputMatrix_d->colBlockELL, 
-			inputMatrix_d->valBlockELL, 
-			inputMatrix_d->partBoundary,
-			vectorIn_d,
-			vectorOut_d);
+	}else{
+		ELL_kernel_block<<<ELL_blocks, ELL_threadSize>>>(num_rows, num_cols_per_row_vec, 
+			block_data_bias_vec, J, V, x,y);
+	}
+		
+	//unbind_x(x);
 	
-	matrixVectorER(inputMatrix_d->numOfRowER, inputMatrix_d->rowVecER, 
-			inputMatrix_d->biasVecER,
-			inputMatrix_d->widthVecER,
-			inputMatrix_d->colER, 
-			inputMatrix_d->valER,
-			vectorIn_d, vectorOut_d);
+}
+//using warp interval for computing on different warps
+void matrix_vectorCOO_warp(const uint32_t num_nozeros_compensation, uint32_t *I, uint32_t *J, double *V, double *x_d, double *y_d, uint32_t testPoint, bool tex=false)
+{
+	uint32_t interval_size2;
+	interval_size2=ceil(((double) num_nozeros_compensation)/(512*512/WARP_SIZE));//for data with 2 million elements, we have interval size 200	
+	//COO_atomic<<<512, 512>>>(num_nozeros_compensation, interval_size2, I, J, V, x_d, y_d, tex, testPoint);
+	COO_shared<<<512, 512>>>(num_nozeros_compensation, interval_size2, I, J, V, x_d, y_d);
 
 }
+//using thread interval make every warp caclute constant numbers multiple of warp size 
+void matrix_vectorCOO(const uint32_t num_nozeros_compensation, uint32_t *I, uint32_t *J, double *V, double *x_d, double *y_d, uint32_t testPoint, bool tex=false)
+{
+	uint32_t blockSizeLocal;
+
+	blockSizeLocal=ceil(((double) num_nozeros_compensation)/(step_p_blk*threadSizeCOO));//for data with 2 million elements, we have interval size 200	
+	//COO_atomic<<<512, 512>>>(num_nozeros_compensation, interval_size2, I, J, V, x_d, y_d, tex, testPoint);
+	COO_shared2<<<blockSizeLocal, threadSizeCOO>>>(num_nozeros_compensation, I, J, V, x_d, y_d);
+		
+
+}
+
+void matrix_vectorHYB(matrixHYB_S_d* inputMatrix, double* vector_in_d,
+		double* vector_out_d, cb_s cb, const uint32_t testPoint,
+		const uint32_t part_size, const uint32_t* part_boundary_d, 
+		const bool tex=false)
+{
+	uint32_t dimension = inputMatrix->dimension;
+	uint32_t ELL_width = inputMatrix->ELL_width;
+	uint32_t totalNumCOO = inputMatrix->totalNumCOO;
+	uint32_t* col_d = inputMatrix->col_d;
+	uint32_t* I_COO_d = inputMatrix->I_COO_d;
+	uint32_t* J_COO_d = inputMatrix->J_COO_d;
+	double* V_d = inputMatrix->V_d;
+	double* V_COO_d = inputMatrix->V_COO_d;
+	uint32_t* ELL_block_bias_vec_d = inputMatrix->ELL_block_bias_vec_d;
+	uint32_t* ELL_block_cols_vec_d = inputMatrix->ELL_block_cols_vec_d;
+	//size_t offset = 0;
+	
+	if(!cb.BLOCK){
+		matrix_vectorELL(dimension, dimension, ELL_width, col_d,V_d,
+				vector_in_d, vector_out_d, false, 0, NULL);
+	} else {
+		if(cb.RODR){
+			matrix_vectorELL_block(dimension, 0, ELL_block_cols_vec_d, 
+					ELL_block_bias_vec_d,
+					col_d,V_d, vector_in_d, vector_out_d,
+					cb.CACHE, part_size, part_boundary_d, tex);
+		}
+		else{
+			matrix_vectorELL_block(dimension, 0, ELL_block_cols_vec_d, 
+					ELL_block_bias_vec_d,
+					col_d, V_d, 
+					vector_in_d, vector_out_d,
+					false, 0, NULL, tex);
+		}
+	}
+
+	//if(tex==true){
+	//	if(texInited == false){
+	//		texInput.addressMode[0] = cudaAddressModeBorder;
+	//		texInput.addressMode[1] = cudaAddressModeBorder;
+	//		texInput.filterMode = cudaFilterModePoint;
+	//		texInput.normalized = false;
+	//		texInited = true;
+	//	}
+	//	cudaBindTexture(&offset, texInput, vector_in_d, sizeof(double)*dimension);	
+	//}
+	if (totalNumCOO > 0) matrix_vectorCOO(totalNumCOO, I_COO_d, J_COO_d, V_COO_d, 
+			vector_in_d, vector_out_d, testPoint, tex);
+
+	//if(tex==true)
+	//	cudaUnbindTexture(texInput);
+}
+

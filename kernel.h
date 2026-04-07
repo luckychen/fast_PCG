@@ -19,14 +19,14 @@
 #include "solver.h"
 #define warpSize  32
 
-const int memPerThread = 48;
-const int threadELL = 1024;
-const int warpPerBlock = threadELL/warpSize;
-const int sharedPerBlock = memPerThread*threadELL;//1024 is the maximum threads per block
-const int elementSize = 4; //if single precision, 4, if float precision, 8 
-const int loopInKernel =  memPerThread/elementSize;
-const int vectorCacheSize = sharedPerBlock/elementSize;
-const int blockPerPart = sharedPerBlock/(warpSize*elementSize); 
+const int ELL_threadSize = 512; 
+
+const int shared_per_block = 48*1024;
+const int element_size = 8; //if single precision, 4, if double precision, 8 
+const int vector_cache_size = shared_per_block/element_size;
+const int block_per_part = shared_per_block/(ELL_threadSize*element_size); 
+const int step_p_blk = 8;
+const int threadSizeCOO= 256;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
